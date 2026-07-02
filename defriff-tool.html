@@ -67,8 +67,16 @@
       </select>
     </div>
     <div>
-      <label>Model</label>
-      <select id="model"></select>
+      <label>Model — gpt-4.1 recommended</label>
+      <select id="modelSelect"></select>
+      <input id="modelCustom" type="text" placeholder="type a model name, e.g. gpt-5.5" style="display:none;margin-top:6px">
+    </div>
+    <div>
+      <label>Output language</label>
+      <select id="lang">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+      </select>
     </div>
     <div>
       <label>API key (stays in this browser; sent only to the AI API)</label>
@@ -76,10 +84,16 @@
     </div>
     <div style="display:flex;align-items:flex-end">
       <label class="switch">
-        <input type="checkbox" id="demoToggle" checked>
+        <input type="checkbox" id="demoToggle">
         <span>DEMO mode (no API calls while ON)</span>
       </label>
     </div>
+  </div>
+
+  <div class="hint" style="margin:-6px 0 16px;line-height:1.6">
+    <b>💡 Recommended models</b><br>
+    <b>Tab ① Extract:</b> <b>gpt-4.1</b> — fast &amp; cheap, and with a big output budget it reads whole invoices; or <b>Claude Sonnet 4.6</b> — best at finishing large size-grids (e.g. Micadan). Use <b>gpt-5</b> only for very large grids (hundreds of rows) where gpt-4.1 stops early.<br>
+    <b>Tab ② Benchmark:</b> <b>gpt-4.1</b> — cheap (~$0.10/product) and returns real source links; or <b>Claude Haiku 4.5</b> — cheapest (~$0.03/product). Avoid <b>Claude Sonnet</b> here — its deep web-search reads whole pages and costs ~$1/product.
   </div>
 
   <!-- ===== tabs ===== -->
@@ -90,7 +104,7 @@
 
   <!-- ===== TAB 1 ===== -->
   <section class="panel" id="tab-extract">
-    <div class="hint">Input a supplier invoice (PDF / Excel) → extract line items + generate product descriptions → output <b>CREATION + DISPATCH</b> Excel. (No web search — fast & cheap.)</div>
+    <div class="hint">Input a supplier invoice (PDF / Excel) → extract line items + generate product descriptions → output <b>CREATION + DISPATCH</b> Excel. (No web search — fast & cheap.) <b>Tip:</b> for large size-grid files (hundreds of rows), choose <b>gpt-5</b> — gpt-4.1 may stop early.</div>
     <div class="drop" id="drop1">📄 Drag an invoice here, or click to select<br><b id="file1name">No file selected</b>
       <input type="file" id="file1" accept=".pdf,.xlsx,.xls" hidden>
     </div>
@@ -101,6 +115,7 @@
     <div class="opts">
       <label class="switch"><input type="checkbox" id="incEnrich"><span>Include enriched description (extra column; OFF = clean import format)</span></label>
       <label class="switch"><input type="checkbox" id="webEnrich"><span>↳ research it on the web (slower, +cost)</span></label>
+      <label class="switch"><input type="checkbox" id="incBarcode"><span>Add EAN / barcode column</span></label>
     </div>
     <div class="actions">
       <button class="go" id="run1">▶ Process</button>
@@ -112,7 +127,7 @@
 
   <!-- ===== TAB 2 ===== -->
   <section class="panel hidden" id="tab-bench">
-    <div class="hint">Input a product list (Excel) → for each product, one real web search → output a benchmark Excel (<b>Avg / Highest / Lowest + verified reference URLs</b>). Uses only URLs the search tool actually returned.</div>
+    <div class="hint">Input a product list (Excel — e.g. the CREATION/DISPATCH file from Tab ①) → for each product, one real web search → output the <b>DISPATCH file</b> with <b>Avg / Highest / Lowest (€)</b> filled and a <b>Benchmarking References</b> column of verified URLs. Uses only URLs the search tool actually returned.</div>
     <div class="drop" id="drop2">📊 Drag a product-list Excel here, or click to select<br><b id="file2name">No file selected</b>
       <input type="file" id="file2" accept=".xlsx,.xls,.csv" hidden>
     </div>
@@ -163,7 +178,9 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
    Models per provider
    ============================================================ */
 const MODELS = {
-  openai: ["gpt-4.1", "gpt-4o", "o4-mini"],
+  // gpt-4.1 first = default: fast, cheap, reliable for extraction AND benchmarking.
+  // gpt-5.x are reasoning models that over-search on benchmarking (many searches, high cost) — selectable but not default.
+  openai: ["gpt-4.1", "gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "o4-mini", "o3"],
   claude: ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
 };
 // rough output-token + search pricing for the session cost estimate (USD)
@@ -180,30 +197,66 @@ const SEARCH_CALL_USD = 0.03;
 /* ============================================================
    Prompts (validated against the ETS Michel gold file)
    ============================================================ */
-function buildExtractPrompt(includeEnrich){
-  const head = `Role: You are a Senior Procurement Analyst. Extract the products in the attached supplier invoice (or product text).
-Complete the phases for EVERY product line.
+function buildExtractPrompt(includeEnrich, lang){
+  const fr = lang === "fr";
+  const unknownColor = fr ? "Non spécifié" : "Not specified";
+  const head = `Role: You are a Senior Procurement Analyst specialised in fashion/textile wholesale documents.
+The attached document may be a supplier INVOICE, ORDER CONFIRMATION, PACKING LIST, or DELIVERY NOTE (BL), as a PDF (possibly scanned images) or a spreadsheet.
+
+CRITICAL — COMPLETENESS:
+- Extract EVERY product line in the document, from the first to the very last. A document may contain anywhere from 1 to several hundred lines.
+- NEVER stop early, NEVER summarise, NEVER write "etc." or "..." or "and so on". If there are 150 lines, output 150 rows.
+- Read all pages / all rows. Ignore non-product lines — headers, totals, tax lines, address blocks, and especially shipping/transport fees, discounts, deposits, and purely informational text ("PARTICIPATION FRAIS DE TRANSPORT", "INFORMATION", etc.). Only real physical products become rows.
+- SIZE HANDLING (important): if the document breaks a product down by individual size with a quantity per size (a size grid/matrix — e.g. columns S, M, L, XL, XXL, or ages, each holding a quantity), output ONE ROW PER SIZE: set size = that single size and total_qty = THAT size's quantity. Include only sizes whose quantity is greater than 0. If sizes are given only as a combined range with a single total (no per-size numbers), output ONE row with size = the combined range.
+- Likewise keep different colours as separate rows when the document lists them separately.
 
 FIELD RULES:
-- supplier: the company that ISSUED the invoice (seller/vendor named at the top). NOT the bill-to / client.
-- brand: each product REFERENCE is formatted MODEL/BRAND (e.g. "ALY/KAPORAL"); the brand is the token AFTER the slash.
-- ref_frs: the model code (token BEFORE the slash).
+- supplier: the company that ISSUED the document (seller/vendor, usually the letterhead/logo at the very top). NOT the bill-to / client (e.g. NOT "FRANCE ACHAT", "FAI", "DEGRIFFSTOCK").
+- brand: use the Brand / Marque column if the document has one. Otherwise, if a reference is formatted MODEL/BRAND (e.g. "ALY/KAPORAL"), the brand is the token AFTER the slash. Otherwise infer from the designation.
+- ref_frs: the supplier's model/article code (e.g. the token BEFORE the slash, or the REF/Style column).
+- designation: the full product description/label as written.
 - season: infer FW / SS / All-Year from the product type. Never use VAT/tax codes (e.g. C19).
-- dept: MEN / WOMEN / CHILDREN.  paht: the unit NET purchase price (P.U. Net).  barcode: the EAN-13 digits.
-
-Phase 1 Deep Extraction of every field listed in the JSON schema below.`;
-  const phase2 = includeEnrich
-    ? `\nPhase 2 Enrichment: 2-3 sentences on material, unique features, target market (enriched_data).`
+- dept: MEN / WOMEN / CHILDREN (map HOMME/FEMME/ENFANT, JUNIOR->CHILDREN).
+- cat_family: the product family (T-SHIRT, JOGGING, BOXER, ROBE, etc.).
+- size: a SINGLE size when a per-size breakdown exists (see SIZE HANDLING above); otherwise the size range as written. color: the colour; if unknown use "${unknownColor}".
+- total_qty: the quantity for THIS row — the per-size quantity when split by size, else the line total (integer).
+- colisage: units per carton/box if shown.
+- PRICE MAPPING (important): a column labelled PVP / PVC / RRP / "prix de vente" is a RETAIL price → put it in pvc and leave paht EMPTY. Only a purchase/cost price (PA HT / P.U. Net / prix d'achat) goes in paht. Never put a retail price in paht.
+- currency: the currency symbol or code (e.g. "EUR").
+- barcode: the EAN/EAN-13 digits if present (digits only).
+- Leave a field as "" (empty) when the document does not provide it. Do NOT invent values.`;
+  const langLine = includeEnrich
+    ? `\n\nENRICHMENT: for each row add enriched_data = 2-3 sentences on material, unique features, and target market, written in ${fr ? "FRENCH" : "ENGLISH"}.`
     : ``;
-  const fields = `"no":..,"supplier":..,"brand":..,"designation":..,"season":..,"year":..,"dept":..,"cat_family":..,"size":..,"color":..,"ref_n1":..,"ref_frs":..,"total_qty":..,"barcode":..,"paht":..`
+  const fields = `"no":..,"supplier":..,"brand":..,"designation":..,"season":..,"year":..,"dept":..,"cat_family":..,"size":..,"color":..,"ref_n1":..,"ref_frs":..,"total_qty":..,"colisage":..,"paht":..,"pvc":..,"currency":..,"barcode":..`
     + (includeEnrich ? `,"enriched_data":..` : ``);
-  return head + phase2 + `\n\nOutput STRICT JSON ONLY (no markdown, no prose):\n{"rows":[{` + fields + `}]}`;
+  return head + langLine + `\n\nOutput STRICT JSON ONLY (no markdown, no prose, no code fences). One object per product line:\n{"rows":[{` + fields + `}]}`;
 }
 
-function benchPrompt(brand, designation){
-  return `Search the web for the current French retail/resale price in EUR of: ${brand} ${designation}.
-Prefer outlet sites (Espace des marques, Veepee, Showroomprive, Modz, Zeshoes, Stokomani, Marques Avenue, BrandAlley, BazarChic) and brand/general retailers (the brand's official site, Zalando.fr, Amazon.fr). Avoid degriffstock.com.
-Base the prices ONLY on what you actually find. After your research, end your reply with STRICT JSON on its own line:
+/* MEN/WOMEN/CHILDREN (any language) -> the system's French RAYON values */
+function toRayon(dept){
+  const d = String(dept || "").trim().toLowerCase();
+  if (/(femme|women|woman|female|dame|w)/.test(d) && !/homme/.test(d)) return "FEMME";
+  if (/(enfant|child|kid|junior)/.test(d)) return "ENFANT";
+  if (/(homme|men|man|male|h)/.test(d)) return "HOMME";
+  return String(dept || "").toUpperCase();
+}
+
+function benchPrompt(p){
+  const id = [p.brand, p.designation].filter(Boolean).join(" ");
+  const ean = p.ean ? ` — barcode/EAN: ${p.ean}` : "";
+  const extra = [p.color, p.size].filter(Boolean).join(", ");
+  return `Role: Senior Procurement Analyst — Phase 3: Validated Price Benchmarking.
+Find the current French retail/resale price in EUR of this product: ${id}${ean}${extra ? " ("+extra+")" : ""}.
+Use ALL the identifying information provided — brand, product name, and especially the barcode/EAN number — in your searches. Try searching by the EAN/barcode as well as by brand + product name.
+
+SOURCE CHECK — search these resale sites first (or similar retail sites if these don't have it):
+Espace des marques (espace-des-marques.com), Veepee (veepee.fr), Showroom privé (showroomprive.com), Beauté Privée (beauteprivee.fr), The Bradery (thebradery.com), Modz (modz.fr), Mon Dressing Outlet (mondressingoutlet.fr), Zeshoes (zeshoes.com), Stokomani (stokomani.fr), Marques Avenue (marquesavenue.com), Private Sport Shop (privatesportshop.fr), BazarChic (fr.bazarchic.com), BrandAlley (brandalley.fr).
+CAUTION: Do NOT use degriffstock.com as a source.
+LINK VALIDATION: verify the links resolve. If a site returns a "Not Found" error or requires login, search public retailers (Amazon.fr, Zalando.fr, etc.).
+NO GUESSING: if no live link is found, do not invent a URL — the price fields stay null.
+
+After your research, end your reply with STRICT JSON on its own line:
 {"price_avg":number|null,"price_high":number|null,"price_low":number|null}`;
 }
 
@@ -240,11 +293,23 @@ function refreshBadge(){
     b.textContent="LIVE mode (calls the API · uses tokens)"; }
 }
 function refreshModels(){
-  const prov=$("provider").value, sel=$("model");
+  const prov=$("provider").value, sel=$("modelSelect");
   sel.innerHTML="";
   MODELS[prov].forEach(m=>{ const o=document.createElement("option"); o.value=m; o.textContent=m; sel.appendChild(o); });
+  const co=document.createElement("option"); co.value="__custom__"; co.textContent="Custom (type it myself)…"; sel.appendChild(co);
+  sel.value = MODELS[prov][0];          // default = recommended
+  $("modelCustom").style.display="none"; $("modelCustom").value="";
   $("apiKey").placeholder = prov==="claude" ? "sk-ant-..." : "sk-...";
 }
+function getModel(){
+  const sel=$("modelSelect");
+  return sel.value==="__custom__" ? $("modelCustom").value.trim() : sel.value;
+}
+$("modelSelect").addEventListener("change", ()=>{
+  const custom = $("modelSelect").value==="__custom__";
+  $("modelCustom").style.display = custom ? "block" : "none";
+  if(custom) $("modelCustom").focus();
+});
 $("demoToggle").addEventListener("change", refreshBadge);
 $("provider").addEventListener("change", refreshModels);
 
@@ -284,25 +349,72 @@ function parseJSON(text){
   if(!text) return null;
   let t=text.replace(/```json/gi,"").replace(/```/g,"");
   const m=t.match(/\{[\s\S]*\}/);
-  if(!m) return null;
-  try{ return JSON.parse(m[0]); }catch(e){ return null; }
+  if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
+  // Fallback: salvage individual {...} objects so one malformed entry can't lose everything.
+  const objs=t.match(/\{[^{}]*\}/g)||[];
+  const parsed=[];
+  for(const o of objs){ try{ parsed.push(JSON.parse(o)); }catch(e){} }
+  if(!parsed.length) return null;
+  const rowLike=parsed.filter(r=>r&&(r.designation!==undefined||r.size!==undefined));
+  return rowLike.length>1 ? {rows:rowLike} : parsed[0];
 }
 function cleanUrl(u){ return (u||"").replace(/[?&]utm_source=openai/,""); }
+
+/* Drop dead reference links (HTTP 404/410) via the launcher's server-side checker.
+   Keeps everything else (200/3xx/403-bot-block/timeout) to avoid over-dropping. */
+async function validateUrls(urls, onLog){
+  const keep=[]; let checkerOk=true;
+  for(const u of urls){
+    if(!checkerOk){ keep.push(u); continue; }
+    try{
+      const r=await fetch("/proxy/check?url="+encodeURIComponent(u));
+      const ct=r.headers.get("content-type")||"";
+      if(!r.ok || !ct.includes("json")){   // route missing = stale launcher
+        checkerOk=false;
+        if(onLog) onLog("⚠ Link checker not active — RESTART the launcher (close the window & re-run Start Defriff Tool.bat), then reload this page. Links shown WITHOUT 404 filtering.");
+        keep.push(u); continue;
+      }
+      const j=await r.json();
+      if(j.dead){ if(onLog) onLog(`dropped dead link (${j.status}): ${u}`); }
+      else keep.push(u);
+    }catch(e){ keep.push(u); }   // transient error -> keep
+  }
+  return keep;
+}
+
+/* fetch with automatic back-off on 429 (rate limit) / 529 (overloaded).
+   Honors Retry-After; waits and retries so big jobs don't just error out. */
+async function fetchRetry(url, opts, onWait){
+  for(let attempt=0; attempt<5; attempt++){
+    const res = await fetch(url, opts);
+    if(res.status!==429 && res.status!==529) return res;
+    const ra = parseInt(res.headers.get("retry-after")||"") || Math.min(60, 8*(attempt+1));
+    if(onWait) onWait(res.status, ra, attempt+1);
+    await new Promise(r=>setTimeout(r, ra*1000));
+  }
+  return fetch(url, opts); // last try
+}
 
 /* ============================================================
    Provider calls
    ============================================================ */
-async function callOpenAI(key, model, {textPrompt, pdfDataUrl, useSearch, maxOut}){
+async function callOpenAI(key, model, {textPrompt, pdfDataUrl, useSearch, jsonMode, onWait}){
   const content=[{type:"input_text",text:textPrompt}];
   if(pdfDataUrl) content.push({type:"input_file",filename:"input.pdf",file_data:pdfDataUrl});
-  const body={ model, max_output_tokens:maxOut||3500, input:[{role:"user",content}] };
+  // No max_output_tokens: let the model output as many rows as needed (avoids truncation).
+  const body={ model, input:[{role:"user",content}] };
   if(useSearch) body.tools=[{type:"web_search"}];
+  // JSON mode: force guaranteed-valid JSON (extraction) so a stray typo can't break parsing.
+  if(jsonMode) body.text={format:{type:"json_object"}};
+  // Reasoning models (gpt-5.x / o-series) default to HIGH effort -> with web_search they run
+  // away (dozens of searches, budget exhausted, empty output). Force LOW effort to keep them sane.
+  if(/^(gpt-5|o\d)/i.test(model)) body.reasoning={effort:"low"};
   // Goes through the local launcher proxy (OpenAI blocks direct browser calls / CORS).
-  const res=await fetch("/proxy/openai",{
+  const res=await fetchRetry("/proxy/openai",{
     method:"POST",
     headers:{"Authorization":"Bearer "+key,"Content-Type":"application/json"},
     body:JSON.stringify(body)
-  });
+  }, onWait);
   if(!res.ok) throw new Error("OpenAI "+res.status+": "+(await res.text()).slice(0,180));
   const data=await res.json();
   let text="", cites=[], nSearch=0;
@@ -317,24 +429,31 @@ async function callOpenAI(key, model, {textPrompt, pdfDataUrl, useSearch, maxOut
   return {text, cites, usage:data.usage||{}, nSearch};
 }
 
-async function callClaude(key, model, {textPrompt, pdfBase64, useSearch, maxOut}){
+async function callClaude(key, model, {textPrompt, pdfBase64, useSearch, maxOut, onWait}){
   const content=[];
   if(pdfBase64) content.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:pdfBase64}});
   content.push({type:"text",text:textPrompt});
-  const body={ model, max_tokens:maxOut||3500, messages:[{role:"user",content}] };
+  // Anthropic REQUIRES max_tokens; set it high so it isn't a practical limit.
+  const body={ model, max_tokens:32000, messages:[{role:"user",content}] };
+  // basic web_search (snippets) — MUCH cheaper than 20260209 dynamic filtering (which ingests
+  // whole pages: 100k-600k tokens/product) and works on every Claude model incl. Haiku.
   if(useSearch) body.tools=[{type:"web_search_20250305",name:"web_search",max_uses:3}];
   // Through the local launcher proxy (uniform with OpenAI; key stays local).
-  const res=await fetch("/proxy/anthropic",{
+  const res=await fetchRetry("/proxy/anthropic",{
     method:"POST",
     headers:{"x-api-key":key,"anthropic-version":"2023-06-01","content-type":"application/json"},
     body:JSON.stringify(body)
-  });
+  }, onWait);
   if(!res.ok) throw new Error("Claude "+res.status+": "+(await res.text()).slice(0,180));
   const data=await res.json();
   let text="", cites=[], nSearch=0;
   for(const block of (data.content||[])){
     if(block.type==="text"){ text+=block.text||"";
-      for(const c of (block.citations||[])) if(c.url) cites.push(cleanUrl(c.url));
+      for(const c of (block.citations||[])) if(c.url) cites.push(cleanUrl(c.url));  // model-cited URLs
+    }
+    // Claude returns the actual search hits here — real URLs, use them for References.
+    if(block.type==="web_search_tool_result"){
+      for(const r of (block.content||[])) if(r.url) cites.push(cleanUrl(r.url));
     }
     if(block.type==="server_tool_use" && block.name==="web_search") nSearch++;
   }
@@ -358,9 +477,9 @@ function DEMO_EXTRACT_ROWS(){
 }
 function DEMO_BENCH_ROWS(){
   const base=DEMO_EXTRACT_ROWS();
-  const px=[[35,35,35,"chevignon.fr; laredoute.fr"],[25,30,20,"brandalley.fr; veepee.fr"],[15,20,10,"modz.fr; stokomani.fr"]];
-  return base.map((r,i)=>({doc_id:"Facture ETS MICHEL N° 113448",no:r.no,extracted_time:"2026-04-15 09:00:00 UTC",
-    supplier:r.supplier,brand:r.brand,designation:r.designation,
+  const px=[[35,35,35,"chevignon.fr ; laredoute.fr"],[25,30,20,"brandalley.fr ; veepee.fr"],[15,20,10,"modz.fr ; stokomani.fr"]];
+  return base.map((r,i)=>({no:r.no, rayon:toRayon(r.dept), model:(r.ref_frs||"").split("/")[0], ean:r.barcode,
+    designation:r.designation, qty:r.total_qty, paht:r.paht,
     price_avg:px[i][0],price_high:px[i][1],price_low:px[i][2],benchmarking_reference:px[i][3]}));
 }
 
@@ -375,9 +494,10 @@ const COLS_EXTRACT=[
   {key:"enriched_data",label:"Enriched"},{key:"barcode",label:"EAN"}
 ];
 const COLS_BENCH=[
-  {key:"no",label:"No."},{key:"supplier",label:"Supplier"},{key:"brand",label:"Brand"},
-  {key:"designation",label:"Designation"},{key:"price_avg",label:"Avg"},{key:"price_high",label:"High"},
-  {key:"price_low",label:"Low"},{key:"benchmarking_reference",label:"References"}
+  {key:"no",label:"No."},{key:"rayon",label:"RAYON"},{key:"model",label:"MODELE"},
+  {key:"designation",label:"Designation"},{key:"ean",label:"EAN"},{key:"qty",label:"QTES"},{key:"paht",label:"PAHT"},
+  {key:"price_avg",label:"Avg"},{key:"price_high",label:"High"},{key:"price_low",label:"Low"},
+  {key:"benchmarking_reference",label:"References"}
 ];
 function escapeHtml(s){ return String(s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
 function renderTable(targetId, rows, columns){
@@ -386,61 +506,112 @@ function renderTable(targetId, rows, columns){
   let h="<div class='count'>"+rows.length+" rows</div><div class='tablewrap'><table><thead><tr>";
   columns.forEach(c=>h+="<th>"+c.label+"</th>"); h+="</tr></thead><tbody>";
   rows.forEach(r=>{ h+="<tr>"; columns.forEach(c=>{ const v=r[c.key]==null?"":String(r[c.key]);
-    h+=`<td class="${wrap.has(c.key)?'wrap':''}">${escapeHtml(v)}</td>`; }); h+="</tr>"; });
+    const cell = c.key==="benchmarking_reference" ? linkifyRefs(v) : escapeHtml(v);
+    h+=`<td class="${wrap.has(c.key)?'wrap':''}">${cell}</td>`; }); h+="</tr>"; });
   $(targetId).innerHTML=h+"</tbody></table></div>";
+}
+/* turn a " ; "-joined list of URLs into clickable links (opens in new tab) */
+function linkifyRefs(v){
+  if(!v) return "";
+  const parts = v.split(/\s*;\s*/).filter(Boolean);
+  const urls = parts.filter(p=>/^https?:\/\//i.test(p));
+  if(!urls.length) return escapeHtml(v);   // e.g. "No live link found"
+  return urls.map(u=>`<a href="${escapeHtml(u)}" target="_blank" rel="noopener">${escapeHtml(u.replace(/^https?:\/\/(www\.)?/,'').slice(0,48))}</a>`).join("<br>");
 }
 
 /* ============================================================
    Excel builders
    ============================================================ */
 function num(v){ const n=parseFloat(v); return isNaN(n)?"":n; }
-function buildCreationDispatch(rows, includeEnrich){
+const EUR_FMT = '0.00" €"';
+// apply a number format to one column (0-based) across data rows in a sheet
+function fmtCol(ws, colIdx, firstDataRow, nRows, z){
+  for(let i=0;i<nRows;i++){
+    const addr=XLSX.utils.encode_cell({r:firstDataRow+i, c:colIdx});
+    const cell=ws[addr];
+    if(cell && cell.t==="n") cell.z=z;
+  }
+}
+function buildCreationDispatch(rows, includeEnrich, includeBarcode){
   const wb=XLSX.utils.book_new();
+  // ---- CREATION (matches example creation-distach file) ----
   const cHead=["FOURNISSEUR","MARQUE","SAISON","ANNEE","RAYON","CAT / FAMILLE","Description","TAILLE","COULEUR","REF FAI","REF FOURNISSEUR","QTES","PAHT","PVC","PV FAI","EAN FAI"];
   if(includeEnrich) cHead.push("ENRICHED DESCRIPTION");
+  if(includeBarcode) cHead.push("BARCODE (EAN)");
   const cAoa=[["CREATION FILE"],cHead];
-  rows.forEach(r=>{ const row=[r.supplier,r.brand,r.season,r.year,r.dept,r.cat_family,r.designation,r.size,r.color,r.ref_n1,r.ref_frs,r.total_qty,num(r.paht),num(r.pvc),num(r.pv_fai),r.barcode];
-    if(includeEnrich) row.push(r.enriched_data||""); cAoa.push(row); });
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(cAoa),"CREATION");
+  rows.forEach(r=>{
+    // REF FOURNISSEUR = EAN (kept as text -> raw digits, safe for CSV) ; EAN FAI left blank (per template)
+    const row=[r.supplier,r.brand,r.season,r.year,toRayon(r.dept),r.cat_family,r.designation,r.size,r.color,r.ref_n1,String(r.barcode||""),num(r.total_qty),num(r.paht),num(r.pvc),num(r.pv_fai),""];
+    if(includeEnrich) row.push(r.enriched_data||"");
+    if(includeBarcode) row.push(String(r.barcode||""));
+    cAoa.push(row);
+  });
+  const cWs=XLSX.utils.aoa_to_sheet(cAoa);
+  fmtCol(cWs,12,2,rows.length,EUR_FMT); // PAHT column (index 12), data starts at row index 2
+  XLSX.utils.book_append_sheet(wb,cWs,"CREATION");
+  // ---- DISPATCH ----
   const dHead=["RAYON","REF N-1","MODELE FR","REF FOURN","DESIGNATION","COLISAGE","NB COLIS","QTES","PAHT N-1","PAHT","TOTAL","Price Benchmarking : Average Price","Price Benchmarking : Highest Price","Price Benchmarking : Lowest Price","PVC N-1","PVC","PV FAI N-1","PV FAI","MAG 1","MAG 2","MAG 3","MAG 4","MAG 5"];
   const dAoa=[["DISPATCH FILE"],dHead];
   rows.forEach(r=>{ const modele=(r.ref_frs||"").split("/")[0];
     const total=(num(r.paht)&&num(r.total_qty))?num(r.paht)*num(r.total_qty):"";
-    dAoa.push([r.dept,r.ref_n1,modele,r.barcode,r.designation,"","",r.total_qty,"",num(r.paht),total,num(r.price_avg),num(r.price_high),num(r.price_low),"","","","","","","","",""]); });
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(dAoa),"DISPATCH");
+    dAoa.push([toRayon(r.dept),r.ref_n1,modele,String(r.barcode||""),r.designation,r.colisage||"","",num(r.total_qty),"",num(r.paht),total,num(r.price_avg),num(r.price_high),num(r.price_low),"",num(r.pvc),"","","","","","",""]); });
+  const dWs=XLSX.utils.aoa_to_sheet(dAoa);
+  [9,10].forEach(c=>fmtCol(dWs,c,2,rows.length,EUR_FMT)); // PAHT, TOTAL
+  XLSX.utils.book_append_sheet(wb,dWs,"DISPATCH");
   return wb;
 }
-function buildBenchmark(rows){
+const EUR0_FMT = '#,##0" €"';
+// Benchmark output in the DISPATCH layout + an appended references column
+function buildDispatchBenchmark(rows){
   const wb=XLSX.utils.book_new();
-  const head=["The title / ID of document","No.","Extracted Time","Supplier","Brand","Designation","Price Benchmarking : Average Price","Price Benchmarking : Highest Price","Price Benchmarking : Lowest Price","References of Benchmarking"];
-  const aoa=[["PRICE BENCHMARKING"],head];
-  rows.forEach(r=>aoa.push([r.doc_id||"",r.no,r.extracted_time||"",r.supplier,r.brand,r.designation,num(r.price_avg),num(r.price_high),num(r.price_low),r.benchmarking_reference]));
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),"Benchmarking");
+  const head=["RAYON","REF N-1","MODELE FR","REF FOURN","DESIGNATION","COLISAGE","NB COLIS","QTES","PAHT N-1","PAHT","TOTAL","Price Benchmarking : Average Price","Price Benchmarking : Highest Price","Price Benchmarking : Lowest Price","PVC N-1","PVC","PV FAI N-1","PV FAI","MAG 1","MAG 2","MAG 3","MAG 4","MAG 5","Benchmarking References"];
+  const aoa=[["DISPATCH FILE"],head];
+  rows.forEach(r=>{
+    const total=(num(r.paht)&&num(r.qty))?num(r.paht)*num(r.qty):"";
+    aoa.push([r.rayon||"","",r.model||"",String(r.ean||""),r.designation||"","","",num(r.qty),"",num(r.paht),total,num(r.price_avg),num(r.price_high),num(r.price_low),"","","","","","","","","",r.benchmarking_reference||""]);
+  });
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  [9].forEach(c=>fmtCol(ws,c,2,rows.length,EUR_FMT));      // PAHT
+  fmtCol(ws,10,2,rows.length,EUR0_FMT);                     // TOTAL (8,580 €)
+  [11,12,13].forEach(c=>fmtCol(ws,c,2,rows.length,EUR_FMT)); // Avg/High/Low (35.00 €)
+  XLSX.utils.book_append_sheet(wb,ws,"DISPATCH");
   return wb;
 }
 
-/* find products in an uploaded sheet (EXTRACTION or CREATION layouts) */
+/* find products in an uploaded sheet (CREATION, DISPATCH or EXTRACTION layouts).
+   Only a Designation column is required; the rest are optional and carried over. */
 function findProducts(aoa){
   let hdr=-1;
   for(let i=0;i<aoa.length;i++){
     const low=aoa[i].map(c=>String(c).toLowerCase());
-    const hasBrand=low.some(c=>c.includes("brand")||c.includes("marque"));
-    const hasDes=low.some(c=>c.includes("designation")||c.includes("description"));
-    if(hasBrand&&hasDes){ hdr=i; break; }
+    if(low.some(c=>c.includes("designation")||c.includes("description"))){ hdr=i; break; }
   }
-  if(hdr<0) throw new Error("Could not find a header row with Brand + Designation columns.");
-  const low=aoa[hdr].map(c=>String(c).toLowerCase());
+  if(hdr<0) throw new Error("Could not find a header row with a Designation/Description column.");
+  const low=aoa[hdr].map(c=>String(c).trim().toLowerCase());
   const col=(...names)=>low.findIndex(c=>names.some(n=>c.includes(n)));
-  const ci={brand:col("brand","marque"),des:col("designation","description"),
-            sup:col("supplier","fournisseur"),no:col("no.","no","#")};
+  const exact=name=>low.findIndex(c=>c===name);
+  // PAHT: prefer the exact "paht" column, not "paht n-1"
+  const pahtCol = exact("paht") >= 0 ? exact("paht") : low.findIndex(c=>c.includes("paht")&&!c.includes("n-1"));
+  const ci={
+    des:col("designation","description"),
+    brand:col("brand","marque"),
+    rayon:col("rayon","dept","rayon"),
+    model:col("modele","ref frs","ref_frs","modele fr"),
+    ean:col("ean","barcode","codebarre","code barre","code-barre","ref fourn"),
+    color:col("couleur","color","colour"),
+    size:col("taille","size"),
+    qty:col("qte","qty","quantit"),
+    paht:pahtCol
+  };
+  const g=(row,idx)=> idx>=0 ? String(row[idx]==null?"":row[idx]).trim() : "";
   const out=[];
   for(let i=hdr+1;i<aoa.length;i++){
-    const row=aoa[i]; const des=ci.des>=0?String(row[ci.des]||"").trim():"";
+    const row=aoa[i]; const des=g(row,ci.des);
     if(!des) continue;
-    out.push({no:out.length+1,
-      brand:ci.brand>=0?String(row[ci.brand]||"").trim():"",
-      designation:des,
-      supplier:ci.sup>=0?String(row[ci.sup]||"").trim():""});
+    out.push({no:out.length+1, designation:des,
+      brand:g(row,ci.brand), rayon:g(row,ci.rayon), model:g(row,ci.model),
+      ean:g(row,ci.ean), color:g(row,ci.color), size:g(row,ci.size),
+      qty:g(row,ci.qty), paht:g(row,ci.paht)});
   }
   return out;
 }
@@ -454,6 +625,7 @@ $("run1").addEventListener("click", async ()=>{
   try{
     const includeEnrich=$("incEnrich").checked;
     S.incEnrich1=includeEnrich;
+    S.incBarcode1=$("incBarcode").checked;
     const ext=S.file1.name.split(".").pop().toLowerCase();
     logTo("log1","Input file: "+S.file1.name+" ("+ext+")");
     logTo("log1","Enriched description: "+(includeEnrich?"ON (extra column)":"OFF (clean import format)"));
@@ -463,10 +635,11 @@ $("run1").addEventListener("click", async ()=>{
       S.rows1=DEMO_EXTRACT_ROWS();
       if(!includeEnrich) S.rows1.forEach(r=>delete r.enriched_data);
     } else {
-      const provider=$("provider").value, model=$("model").value, key=$("apiKey").value.trim();
+      const provider=$("provider").value, model=getModel(), key=$("apiKey").value.trim();
       if(!key) throw new Error("Enter your API key at the top.");
+      if(!model) throw new Error("Choose a model (or type one in the Custom box).");
       const useSearch=includeEnrich && $("webEnrich").checked;
-      let textPrompt=buildExtractPrompt(includeEnrich), pdfDataUrl=null, pdfBase64=null;
+      let textPrompt=buildExtractPrompt(includeEnrich, $("lang").value), pdfDataUrl=null, pdfBase64=null;
       if(ext==="pdf"){
         const b64=await fileToBase64(S.file1);
         pdfBase64=b64; pdfDataUrl="data:application/pdf;base64,"+b64;
@@ -477,7 +650,8 @@ $("run1").addEventListener("click", async ()=>{
         textPrompt += "\n\nINVOICE TABLE (tab-separated rows):\n"+aoa.map(r=>r.join("\t")).join("\n");
       }
       if(useSearch) logTo("log1","Web research for descriptions is ON (higher cost).","warn");
-      const out=await aiCall(provider,key,model,{textPrompt,pdfDataUrl,pdfBase64,useSearch,maxOut:3500});
+      const out=await aiCall(provider,key,model,{textPrompt,pdfDataUrl,pdfBase64,useSearch,jsonMode:true,
+        onWait:(st,ra)=>logTo("log1",`Rate limited (${st}) — waiting ${ra}s then retrying…`,"warn")});
       const {c,inTok,outTok}=addCost(model,out.usage,out.nSearch);
       logTo("log1",`Tokens in/out: ${inTok}/${outTok} · searches: ${out.nSearch} · ~$${c.toFixed(3)}`,"cost");
       const parsed=parseJSON(out.text);
@@ -494,7 +668,7 @@ $("run1").addEventListener("click", async ()=>{
 });
 $("dl1").addEventListener("click", ()=>{
   if(!S.rows1.length) return;
-  const wb=buildCreationDispatch(S.rows1, S.incEnrich1);
+  const wb=buildCreationDispatch(S.rows1, S.incEnrich1, S.incBarcode1);
   if($("fmt1").value==="csv"){
     downloadCSV(wb,"CREATION","creation.csv");
     downloadCSV(wb,"DISPATCH","dispatch.csv");
@@ -503,7 +677,8 @@ $("dl1").addEventListener("click", ()=>{
   }
 });
 function downloadCSV(wb, sheet, filename){
-  const csv=XLSX.utils.sheet_to_csv(wb.Sheets[sheet]);
+  // rawNumbers:true -> CSV gets 2.75 (not "2.75 €"); safe for direct import
+  const csv=XLSX.utils.sheet_to_csv(wb.Sheets[sheet], {rawNumbers:true});
   const blob=new Blob([new Uint8Array([0xEF,0xBB,0xBF]), csv], {type:"text/csv;charset=utf-8;"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename;
   document.body.appendChild(a); a.click(); a.remove();
@@ -527,26 +702,30 @@ $("run2").addEventListener("click", async ()=>{
       await new Promise(r=>setTimeout(r,200));
       S.rows2=DEMO_BENCH_ROWS();
     } else {
-      const provider=$("provider").value, model=$("model").value, key=$("apiKey").value.trim();
+      const provider=$("provider").value, model=getModel(), key=$("apiKey").value.trim();
       if(!key) throw new Error("Enter your API key at the top.");
+      if(!model) throw new Error("Choose a model (or type one in the Custom box).");
       const est=(n*0.09).toFixed(2);
       if(!confirm(`This will run ${n} web searches (~$${est}). Continue?`)){ logTo("log2","Cancelled.","warn"); return; }
       for(let i=0;i<n;i++){
         const p=products[i];
-        logTo("log2",`[${i+1}/${n}] ${p.brand} ${p.designation} …`);
+        const label=(p.brand?p.brand+" ":"")+p.designation;
+        logTo("log2",`[${i+1}/${n}] ${label} …`);
         try{
-          const out=await aiCall(provider,key,model,{textPrompt:benchPrompt(p.brand,p.designation),useSearch:true,maxOut:1200});
+          const out=await aiCall(provider,key,model,{textPrompt:benchPrompt(p),useSearch:true,maxOut:2000,
+            onWait:(st,ra)=>logTo("log2",`   Rate limited (${st}) — waiting ${ra}s then retrying…`,"warn")});
           const {c,inTok,outTok}=addCost(model,out.usage,out.nSearch);
           const j=parseJSON(out.text)||{};
           // drop excluded sources (degriffstock) — hard guarantee, not just a prompt request
           const clean=[...new Set(out.cites)].filter(u=>!/degriffstock/i.test(u));
-          const refs=clean.slice(0,5).join(" ; ") || "No live link found";
-          S.rows2.push({doc_id:"",no:p.no,extracted_time:"",supplier:p.supplier,brand:p.brand,designation:p.designation,
+          const live=await validateUrls(clean.slice(0,8), m=>logTo("log2","   "+m,"warn"));  // drop 404/410
+          const refs=live.slice(0,5).join(" ; ") || "No live link found";
+          S.rows2.push({no:p.no,rayon:toRayon(p.rayon),model:p.model,ean:p.ean,designation:p.designation,qty:p.qty,paht:p.paht,
             price_avg:j.price_avg,price_high:j.price_high,price_low:j.price_low,benchmarking_reference:refs});
-          logTo("log2",`   avg/high/low ${j.price_avg}/${j.price_high}/${j.price_low} · ${clean.length} links · ${inTok}/${outTok} tok · ~$${c.toFixed(3)}`,"cost");
+          logTo("log2",`   avg/high/low ${j.price_avg}/${j.price_high}/${j.price_low} · ${live.length} live links · ${inTok}/${outTok} tok · ~$${c.toFixed(3)}`,"cost");
         }catch(err){
           logTo("log2","   Error: "+err.message,"err");
-          S.rows2.push({no:p.no,supplier:p.supplier,brand:p.brand,designation:p.designation,benchmarking_reference:"ERROR: "+err.message});
+          S.rows2.push({no:p.no,rayon:toRayon(p.rayon),model:p.model,ean:p.ean,designation:p.designation,qty:p.qty,paht:p.paht,benchmarking_reference:"ERROR: "+err.message});
         }
         renderTable("preview2",S.rows2,COLS_BENCH);
       }
@@ -556,7 +735,7 @@ $("run2").addEventListener("click", async ()=>{
     $("dl2").disabled=false;
   }catch(e){ logTo("log2","Error: "+e.message,"err"); }
 });
-$("dl2").addEventListener("click", ()=>{ if(S.rows2.length) XLSX.writeFile(buildBenchmark(S.rows2),"price_benchmark_output.xlsx"); });
+$("dl2").addEventListener("click", ()=>{ if(S.rows2.length) XLSX.writeFile(buildDispatchBenchmark(S.rows2),"dispatch_benchmark.xlsx"); });
 
 refreshModels(); refreshBadge();
 </script>

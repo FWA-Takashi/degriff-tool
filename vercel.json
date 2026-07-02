@@ -5,6 +5,7 @@
   "rewrites": [
     { "source": "/", "destination": "/defriff-tool.html" },
     { "source": "/proxy/openai", "destination": "/api/openai" },
-    { "source": "/proxy/anthropic", "destination": "/api/anthropic" }
+    { "source": "/proxy/anthropic", "destination": "/api/anthropic" },
+    { "source": "/proxy/check", "destination": "/api/check" }
   ]
 }
