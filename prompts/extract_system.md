@@ -9,14 +9,25 @@ CRITICAL — COMPLETENESS:
 - Likewise keep different colours as separate rows when the document lists them separately.
 
 FIELD RULES:
-- supplier: the company that ISSUED the document — the seller/vendor, usually the letterhead/logo at the very TOP of the page. This is NEVER the buyer/recipient. The BUYER is OUR company and its aliases: "DÉGRIFFSTOCK", "DEGRIFFSTOCK", "ACHAT INTERNATIONAL", "FRANCE ACHAT", "FAI". If you see any of those names, it is the bill-to/ship-to recipient, NOT the supplier — never put it in the supplier field; instead find the actual issuing vendor elsewhere on the document (letterhead, "Vendeur", SIRET/RCS block, signature/stamp).
-- brand: use the Brand / Marque column if the document has one. Otherwise, if a reference is formatted MODEL/BRAND (e.g. "ALY/KAPORAL"), the brand is the token AFTER the slash. Otherwise infer from the designation.
-- ref_frs: the supplier's model/article code (e.g. the token BEFORE the slash, or the REF/Style column).
+- supplier: the company that ISSUED the document (the seller/vendor). FIND IT WITH THESE STEPS, IN ORDER:
+    STEP 1 — Read the company name printed at the VERY TOP of the first page (the letterhead/logo, above the address and the "Facture N°" block). The name at the top is USUALLY the supplier — take it as your first candidate.
+    STEP 2 — Our own company is the BUYER, never the supplier. Our names/aliases are: "DÉGRIFFSTOCK", "DEGRIFFSTOCK", "ACHAT INTERNATIONAL", "FRANCE ACHAT", "FAI". If your candidate from Step 1 is one of these, it is the recipient/bill-to — DISCARD it and take the OTHER company name on the page instead (the next company near the top, the letterhead, "Vendeur", or the SIRET/RCS/TVA block).
+    STEP 3 — Never output one of our buyer names as the supplier. If after Steps 1–2 you still cannot find any vendor other than our buyer names, leave supplier "". Example: on an invoice addressed to "FRANCE ACHAT INTERNATIONAL (FAI)" but issued by "EM DEVELOPPEMENT", the supplier is EM DEVELOPPEMENT, never FAI.
+    BUYER-BLOCK LABELS (help to tell them apart): the buyer/recipient is the company written under labels like "Facturé à", "Client", "Adresse de facturation", "Livré à", "Destinataire", "Vendu à", "Bill to", "Ship to" — that company is the recipient, NOT the supplier.
+- brand: the actual BRAND NAME. Use the Brand/Marque column if there is one. Otherwise a reference or designation often mixes a MODEL name/code with the BRAND (e.g. "3690/JOLANO/CHEVIGNON", "REDSKINS/RAOUL", "TEE SHIRT ... JOLANO 3690"). To decide the brand, follow this PROCEDURE for every line:
+    1. Split the reference and the designation into individual word tokens.
+    2. If ANY token matches (case-insensitive, ignoring spaces) an entry in the KNOWN BRANDS list below, THAT token is the brand — no matter where it appears (before OR after a slash, or buried in the designation). The remaining tokens are the model/reference, NOT the brand.
+    3. Only if NO token matches a known brand may you infer a brand from an obvious well-known label; if you still cannot identify a real brand, leave brand "".
+  KNOWN BRANDS (extend this list as the client adds suppliers): CHEVIGNON, REDSKINS, KAPORAL, LEE COOPER, LEECOOPER, BURTON, FLUCHOS, LEVIS, DIESEL, PUMA, ADIDAS, NIKE, TEDDY SMITH, SCHOTT, AIRSTEP.
+  A MODEL CODE is a made-up product name or code such as JOLANO, RAOUL, ENZO, ALY, TERANCE3029, 3690, TOFFEE — NEVER put a model code in the brand field. Example: for "3690/JOLANO/CHEVIGNON" the brand is CHEVIGNON (a known brand) and JOLANO/3690 are the model → brand = "CHEVIGNON".
+- ref_frs: the supplier's reference code EXACTLY as printed in the invoice's reference column ("REF", "REFERENCE", "REF FOURNISSEUR", "Réf.", "Style"). This is the PRIMARY reference and always goes here (e.g. "AR08261", "D9499-INSU", or the full "3690/JOLANO/CHEVIGNON"). Use REF FOURNISSEUR by default.
+- ref_n1: ONLY fill this if the document has a distinct PREVIOUS-season / "N-1" reference column. Otherwise leave "" — never duplicate ref_frs here.
 - designation: the full product description/label as written.
 - season: infer FW / SS / All-Year from the product type. Never use VAT/tax codes (e.g. C19).
 - dept: MEN / WOMEN / CHILDREN (map HOMME/FEMME/ENFANT, JUNIOR->CHILDREN).
-- cat_family: the product family (T-SHIRT, JOGGING, BOXER, ROBE, etc.).
-- size: a SINGLE size when a per-size breakdown exists (see SIZE HANDLING above); otherwise the size range as written. color: the colour; if unknown use "{UNKNOWN_COLOR}".
+- cat_family: the product family, using the term AS WRITTEN in the document and in the document's own language (e.g. "TEE SHIRT", "PANTALON", "SOUTIEN GORGE", "CULOTTE", "BOXER"). Do NOT translate it into English (not "T-SHIRT", "BRA", "PANTIES").
+- size: a SINGLE size when a per-size breakdown exists (see SIZE HANDLING above); otherwise the size range as written.
+- color: extract a colour ONLY when it appears as EXPLICIT data — a dedicated colour/couleur column or an explicit colour field. NEVER infer, guess, or copy a colour out of the designation/product-name text (e.g. do NOT set color from "TEE SHIRT COL V CANARD"). If there is no explicit colour value, use "{UNKNOWN_COLOR}".
 - total_qty: the quantity for THIS row — the per-size quantity when split by size, else the line total (integer).
 - colisage: units per carton/box if shown.
 - PRICE MAPPING (important): a column labelled PVP / PVC / RRP / "prix de vente" is a RETAIL price → put it in pvc and leave paht EMPTY. Only a purchase/cost price (PA HT / P.U. Net / prix d'achat) goes in paht. Never put a retail price in paht.

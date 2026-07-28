@@ -101,10 +101,13 @@ def _creation_aoa(rows, include_enrich, include_barcode):
         head.append("BARCODE (EAN)")
     aoa = [["CREATION FILE"], head]
     for r in rows:
+        # REF FOURNISSEUR = the supplier reference (ref_frs); REF FAI = ref_n1 (usually empty);
+        # the EAN/barcode goes to the EAN FAI column (client feedback 2026-07-28).
         row = [r.get("supplier", ""), r.get("brand", ""), r.get("season", ""), r.get("year", ""),
                to_rayon(r.get("dept", "")), r.get("cat_family", ""), r.get("designation", ""),
-               r.get("size", ""), r.get("color", ""), r.get("ref_n1", ""), str(r.get("barcode", "") or ""),
-               num(r.get("total_qty")), num(r.get("paht")), num(r.get("pvc")), num(r.get("pv_fai")), ""]
+               r.get("size", ""), r.get("color", ""), r.get("ref_n1", ""), str(r.get("ref_frs", "") or ""),
+               num(r.get("total_qty")), num(r.get("paht")), num(r.get("pvc")), num(r.get("pv_fai")),
+               str(r.get("barcode", "") or "")]
         if include_enrich:
             row.append(r.get("enriched_data", "") or "")
         if include_barcode:
@@ -123,7 +126,7 @@ def _dispatch_aoa(rows):
         modele = str(r.get("ref_frs", "") or "").split("/")[0]
         paht, qty = num(r.get("paht")), num(r.get("total_qty"))
         total = paht * qty if (paht != "" and qty != "") else ""
-        aoa.append([to_rayon(r.get("dept", "")), r.get("ref_n1", ""), modele, str(r.get("barcode", "") or ""),
+        aoa.append([to_rayon(r.get("dept", "")), r.get("ref_n1", ""), modele, str(r.get("ref_frs", "") or ""),
                     r.get("designation", ""), r.get("colisage", "") or "", "", qty, "", paht, total,
                     num(r.get("price_avg")), num(r.get("price_high")), num(r.get("price_low")),
                     "", num(r.get("pvc")), "", "", "", "", "", "", ""])

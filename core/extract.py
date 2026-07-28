@@ -9,7 +9,7 @@ import re
 from . import demo
 from .prompts import build_extract_prompt
 from .providers import ai_call
-from .validate import validate_rows
+from .validate import BUYER_ALIASES, validate_rows
 
 
 def parse_json(text):
@@ -81,12 +81,23 @@ def extract(file_bytes, filename, *, provider, key, model, lang="en",
         raise ValueError("Could not parse JSON rows from the model output. "
                          "See the raw response in the debug panel.")
     rows = parsed["rows"]
+    _scrub_buyer_supplier(rows)          # never ship our own company as the supplier
     _apply_supplier(rows, supplier_override)
 
     warnings = validate_rows(rows, source_rowcount)
     debug = {"raw": (out["text"] or "")[:20000], "usage": out["usage"],
              "n_search": out["n_search"], "source": source, "prompt_chars": len(text_prompt)}
     return {"rows": rows, "warnings": warnings, "debug": debug}
+
+
+def _scrub_buyer_supplier(rows):
+    """If the model put OUR company (the buyer: FAI / FRANCE ACHAT / DEGRIFFSTOCK /
+    ACHAT INTERNATIONAL) in the supplier field, blank it — it must never ship as the
+    supplier. The validation warning + the Supplier-override field then guide the fix."""
+    for r in rows:
+        sup = str(r.get("supplier", "") or "").lower()
+        if any(a in sup for a in BUYER_ALIASES):
+            r["supplier"] = ""
 
 
 def _apply_supplier(rows, supplier_override):
